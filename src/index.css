@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-apple-bg: #FBFBFD;
+  --color-apple-card: rgba(255, 255, 255, 0.72);
+  --color-apple-text: #1D1D1F;
+  --color-apple-highlight: #007AFF;
+  --color-apple-error: #ff3b30;
+  --color-apple-success: #34C759;
+  --color-apple-gray: #86868B;
+  --color-glass-border: rgba(0, 0, 0, 0.08);
+  
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-apple-bg);
+  color: var(--color-apple-text);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.glass {
+  background: var(--color-apple-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--color-glass-border);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.06);
+}
+
+.map-container svg {
+  filter: drop-shadow(0 10px 30px rgba(0,0,0,0.05));
+}
+
+.bg-gradient {
+  position: absolute;
+  top: -100px;
+  left: -100px;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(0,122,255,0.05) 0%, rgba(255,255,255,0) 70%);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.country-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-apple-highlight);
+  background: white;
+  padding: 4px 10px;
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  pointer-events: none;
+}
+
+/* Screen reader only utility for SEO and Accessibility */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
