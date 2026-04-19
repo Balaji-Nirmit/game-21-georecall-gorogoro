@@ -26,21 +26,31 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPortrait, setIsPortrait] = useState(false);
   
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [lastTap, setLastTap] = useState<{ id: string, time: number } | null>(null);
+  
   const [targetCountries, setTargetCountries] = useState<string[]>([]);
   const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
+  const [wrongSelections, setWrongSelections] = useState<string[]>([]);
   const [allCountries, setAllCountries] = useState<any[]>([]);
   const [idToName, setIdToName] = useState<Record<string, string>>({});
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [hoveredCountry, setHoveredCountry] = useState<{ name: string, x: number, y: number } | null>(null);
   
   const [message, setMessage] = useState("GeoRecall");
   const [subMessage, setSubMessage] = useState("Remember the sequence of highlighted countries.");
 
+  const maxMistakes = 3 + Math.floor((level - 1) / 3);
+  const remainingChances = maxMistakes - wrongSelections.length;
   const accuracy = guesses === 0 ? 100 : Math.round((hits / guesses) * 100);
 
   // Fullscreen & Orientation Listeners
   useEffect(() => {
     const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    const handleResize = () => setIsPortrait(window.innerHeight > window.innerWidth);
+    const handleResize = () => {
+      setIsPortrait(window.innerHeight > window.innerWidth);
+      setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
+    };
     
     document.addEventListener('fullscreenchange', handleFsChange);
     window.addEventListener('resize', handleResize);
@@ -51,6 +61,20 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
       window.removeEventListener('resize', handleResize);
     };
   }, []);
+
+  // Timer Logic for Showing and Playing phases
+  useEffect(() => {
+    let timer: any;
+    if (gameState === 'showing' && timeLeft > 0) {
+      timer = setInterval(() => {
+        setTimeLeft(prev => prev - 1);
+      }, 1000);
+    } else if (gameState === 'showing' && timeLeft === 0) {
+      setGameState('playing');
+      setSubMessage(`Replicate the pattern by clicking all ${targetCountries.length} countries.`);
+    }
+    return () => clearInterval(timer);
+  }, [gameState, timeLeft, targetCountries]);
 
   const toggleFullscreen = async () => {
     if (!document.fullscreenElement) {
@@ -85,23 +109,10 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
            });
            setAllCountries(uniqueIds);
            setIdToName(mapping);
+           setIsDataLoaded(true);
         }
       });
   }, []);
-
-  // Timer logic for Showing phase
-  useEffect(() => {
-    let timer: any;
-    if (gameState === 'showing' && timeLeft > 0) {
-      timer = setInterval(() => {
-        setTimeLeft(prev => prev - 1);
-      }, 1000);
-    } else if (gameState === 'showing' && timeLeft === 0) {
-      setGameState('playing');
-      setSubMessage(`Replicate the pattern by clicking all ${targetCountries.length} countries.`);
-    }
-    return () => clearInterval(timer);
-  }, [gameState, timeLeft, targetCountries.length]);
 
   const generateTargets = useCallback((currentLevel: number) => {
     if (allCountries.length === 0) return [];
@@ -115,15 +126,17 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
 
   const startLevel = useCallback((currentLevel: number) => {
     const targets = generateTargets(currentLevel);
-    // Timer Scaling: 10s base, increases by 10s every 5 levels.
-    const duration = 10 + Math.floor((currentLevel - 1) / 5) * 10;
+    
+    // Memory time: 8s base, adds 2s every 2 levels as requested
+    const duration = 8 + Math.floor((currentLevel - 1) / 2) * 2;
     
     setTargetCountries(targets);
     setSelectedCountries([]);
+    setWrongSelections([]);
     setTimeLeft(duration);
     setGameState('showing');
     setMessage(`Level ${currentLevel < 10 ? '0' + currentLevel : currentLevel}`);
-    setSubMessage(`Memorize the ${targets.length} highlighted locations.`);
+    setSubMessage(`Memorize these ${targets.length} locations before time runs out.`);
     
     if (soundEnabled) sound.playHighlight();
   }, [generateTargets, soundEnabled]);
@@ -140,26 +153,37 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
     if (gameState !== 'playing') return;
     
     const id = String(geoProps.id);
-    if (!id || selectedCountries.includes(id)) return;
+    if (!id || selectedCountries.includes(id) || wrongSelections.includes(id)) return;
+
+    // Selection Feedback for touch confirmation
+    if (isTouchDevice) {
+      const now = Date.now();
+      if (lastTap && lastTap.id === id && now - lastTap.time < 400) {
+        setLastTap(null); // Valid trigger
+      } else {
+        setLastTap({ id, time: now });
+        if (soundEnabled) sound.playClick();
+        return;
+      }
+    }
     
-    const newSelected = [...selectedCountries, id];
-    setSelectedCountries(newSelected);
     setGuesses(g => g + 1);
 
     if (targetCountries.includes(id)) {
+      const newSelected = [...selectedCountries, id];
+      setSelectedCountries(newSelected);
       setHits(h => h + 1);
       if (soundEnabled) sound.playClick();
       setScore(s => s + 10 * level);
       
-      const missingTargets = targetCountries.filter(t => !newSelected.includes(t));
-      if (missingTargets.length === 0) {
+      if (newSelected.length === targetCountries.length) {
         setGameState('round_over');
         setMessage("Level Complete!");
-        setSubMessage("Perfect recognition. Ready for more?");
+        setSubMessage("Mission success. Loading next coordinates...");
         if (soundEnabled) sound.playSuccess();
         confetti({
-          particleCount: 100,
-          spread: 70,
+          particleCount: 150,
+          spread: 80,
           origin: { y: 0.6 }
         });
         
@@ -170,10 +194,13 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
       }
     } else {
       if (soundEnabled) sound.playError();
-      if (accuracy < 40 && guesses > 8) {
+      const updatedWrong = [...wrongSelections, id];
+      setWrongSelections(updatedWrong);
+      
+      if (updatedWrong.length >= maxMistakes) {
         setGameState('game_over');
-        setMessage("Game Over");
-        setSubMessage(`Precision dropped too low. Level ${level} reached.`);
+        setMessage("Mission Failed");
+        setSubMessage(`${maxMistakes} critical errors flagged. Revealing remaining intel.`);
       }
     }
   };
@@ -186,15 +213,13 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
 
     if (gameState === 'showing') {
       if (targetCountries.includes(strId)) {
-        fill = "var(--color-apple-highlight)"; // Apple blue
+        fill = "var(--color-apple-highlight)"; // Highlight for memorization
       }
     } else if (gameState === 'playing' || gameState === 'round_over' || gameState === 'game_over') {
       if (selectedCountries.includes(strId)) {
-        if (targetCountries.includes(strId)) {
-          fill = "var(--color-apple-success)"; // Green
-        } else {
-          fill = "var(--color-apple-error)"; // Red
-        }
+        fill = "var(--color-apple-success)"; // Correct sequential hit
+      } else if (wrongSelections.includes(strId)) {
+        fill = "var(--color-apple-error)"; // Wrong / out-of-order hit
       } else if (gameState === 'game_over' && targetCountries.includes(strId)) {
          fill = "var(--color-apple-highlight)"; // Show missed targets in blue
       }
@@ -202,7 +227,15 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
     
     return {
       default: { fill, stroke, outline: "none", strokeWidth: 0.5 },
-      hover: { fill: gameState === 'playing' ? "#d1d3d6" : fill, stroke, outline: "none", strokeWidth: 0.5, cursor: gameState === 'playing' ? "pointer" : "default" },
+      // On touch devices, hover styles often get 'stuck' or require extra taps to resolve.
+      // We disable the hover color change on touch devices to ensure the first tap registers as a click.
+      hover: { 
+        fill: (!isTouchDevice && gameState === 'playing') ? "#d1d3d6" : fill, 
+        stroke, 
+        outline: "none", 
+        strokeWidth: 0.5, 
+        cursor: gameState === 'playing' ? "pointer" : "default" 
+      },
       pressed: { fill: gameState === 'playing' ? "#c0c2c7" : fill, stroke, outline: "none", strokeWidth: 0.5 },
     };
   };
@@ -258,18 +291,24 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
                 <span className="text-xs sm:text-sm font-bold">{score}</span>
               </div>
               <div className="flex flex-col border-l border-black/10 pl-3 sm:pl-4">
-                <span className="text-[8px] sm:text-[9px] uppercase font-bold text-[#86868B] tracking-widest">Acc</span>
-                <span className="text-xs sm:text-sm font-bold">{accuracy}%</span>
+                <span className="text-[8px] sm:text-[9px] uppercase font-bold text-[#86868B] tracking-widest">Lives</span>
+                <span className={cn(
+                  "text-xs sm:text-sm font-bold transition-colors",
+                  remainingChances <= 1 ? "text-[#ff3b30]" : "text-[#1D1D1F]"
+                )}>
+                  {remainingChances > 0 ? "●".repeat(remainingChances) : "○"}
+                </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Top Center: Messages (Non-intrusive) */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-4 sm:top-8 text-center hidden sm:block">
-           <AnimatePresence mode="wait">
+      {/* HUD Message (Active Play) */}
+      <div className="absolute left-1/2 -translate-x-1/2 top-4 sm:top-8 text-center hidden sm:block pointer-events-none">
+         <AnimatePresence mode="wait">
+           {gameState === 'playing' && (
              <motion.div 
-               key={message}
+               key="hud-msg"
                initial={{ opacity: 0, y: -10 }}
                animate={{ opacity: 1, y: 0 }}
                exit={{ opacity: 0, y: 10 }}
@@ -278,8 +317,9 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
                <h2 className="text-[10px] sm:text-sm font-bold text-[#1D1D1F] uppercase tracking-[0.2em]">{message}</h2>
                <p className="text-[9px] sm:text-[11px] text-[#86868B] font-medium tracking-wide mt-1 max-w-[200px] sm:max-w-none">{subMessage}</p>
              </motion.div>
-           </AnimatePresence>
-        </div>
+           )}
+         </AnimatePresence>
+      </div>
 
         {/* Top Right: Actions */}
         <div className="flex items-center gap-2 sm:gap-3 pointer-events-auto">
@@ -311,7 +351,76 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
         </div>
       </header>
 
-      {(gameState === 'idle' || gameState === 'game_over') && !hasInteracted && (
+      {/* Immersive Game Over / Success Overlays */}
+      <AnimatePresence>
+        {gameState === 'game_over' && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-xl flex items-center justify-center p-6 sm:p-12"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="glass max-w-lg w-full p-8 sm:p-12 rounded-[40px] text-center shadow-2xl border border-white/20"
+            >
+              <div className="bg-[#ff3b30] w-20 h-20 rounded-full flex items-center justify-center shadow-lg mx-auto mb-8">
+                <RotateCcw size={40} className="text-white" />
+              </div>
+              <h2 className="text-3xl sm:text-4xl font-extrabold text-[#1D1D1F] mb-4 tracking-tight">Mission Failed</h2>
+              <p className="text-lg text-[#86868B] mb-12 leading-relaxed">
+                Critical intelligence lapse detected at Level {level}. The sequence was compromised. Missing targets are highlighted in blue for debriefing.
+              </p>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="bg-white/50 text-[#1D1D1F] px-8 py-4 rounded-2xl font-bold text-sm tracking-widest border border-black/5 hover:bg-white transition-all"
+                >
+                  ABANDON
+                </button>
+                <button 
+                  onClick={startGame}
+                  className="bg-[#1D1D1F] text-white px-8 py-4 rounded-2xl font-bold text-sm tracking-widest shadow-xl hover:bg-black active:scale-95 transition-all"
+                >
+                  RE-DEPLOY
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {gameState === 'round_over' && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] bg-white/40 backdrop-blur-xl flex items-center justify-center p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="text-center"
+            >
+              <motion.div 
+                animate={{ 
+                  scale: [1, 1.2, 1],
+                  rotate: [0, 10, -10, 0]
+                }}
+                className="text-7xl mb-6 inline-block"
+              >
+                🎯
+              </motion.div>
+              <h2 className="text-5xl font-black text-[#1D1D1F] mb-4 tracking-tight">MISSION SUCCESS</h2>
+              <p className="text-xl text-[#007AFF] font-bold tracking-widest uppercase">Level {level} Secured</p>
+              <p className="text-[#86868B] mt-4">Syncing next coordinates...</p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {(gameState === 'idle') && !hasInteracted && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -330,14 +439,18 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
               </p>
               
               <button 
+                disabled={!isDataLoaded}
                 onClick={() => {
                   setHasInteracted(true);
                   if (!isFullscreen) toggleFullscreen();
                   startGame();
                 }}
-                className="bg-[#007AFF] text-white px-12 py-5 rounded-3xl font-bold text-lg tracking-widest shadow-2xl hover:scale-105 active:scale-95 transition-all flex items-center gap-4"
+                className={cn(
+                  "bg-[#007AFF] text-white px-12 py-5 rounded-3xl font-bold text-lg tracking-widest shadow-2xl transition-all flex items-center gap-4",
+                  !isDataLoaded ? "opacity-50 cursor-not-allowed" : "hover:scale-105 active:scale-95"
+                )}
               >
-                START MISSION <Play size={24} fill="white" />
+                {isDataLoaded ? "START MISSION" : "LOADING INTEL..."} <Play size={24} fill="white" />
               </button>
             </motion.div>
           </motion.div>
@@ -375,7 +488,7 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
       </AnimatePresence>
 
       {/* Map Area */}
-      <div className="absolute inset-0 w-full h-full map-container">
+      <div className="absolute inset-0 w-full h-full map-container [touch-action:manipulation]">
         <ComposableMap width={1000} height={600} projection="geoMercator" projectionConfig={{ scale: 180, center: [0, 20] }}>
           <ZoomableGroup zoom={1} minZoom={1} maxZoom={12}>
             <Geographies geography={geoUrl}>
@@ -384,9 +497,17 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
                   <Geography 
                     key={geo.rsmKey} 
                     geography={geo}
-                    onClick={() => handleCountryClick(geo)}
+                    // Use onPointerDown for immediate feedback on both touch and mouse
+                    onPointerDown={(e) => {
+                      // Prevent default to avoid simulated mouse events and double-triggers
+                      if (e.pointerType === 'touch') {
+                        e.preventDefault();
+                      }
+                      handleCountryClick(geo);
+                    }}
                     onMouseEnter={(e) => {
-                      if (gameState === 'idle' || gameState === 'game_over') {
+                      // Only show tooltips for mouse users and not on touch devices
+                      if (!isTouchDevice && (gameState === 'idle' || gameState === 'game_over')) {
                         setHoveredCountry({
                           name: idToName[geo.id] || "Unknown",
                           x: e.clientX,
@@ -395,13 +516,16 @@ export default function MapMemoryGame({}: MapMemoryGameProps) {
                       }
                     }}
                     onMouseMove={(e) => {
-                      if (hoveredCountry) {
+                      if (!isTouchDevice && hoveredCountry) {
                         setHoveredCountry(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null);
                       }
                     }}
                     onMouseLeave={() => setHoveredCountry(null)}
                     style={getCountryStyle(geo.id)}
-                    className="transition-colors duration-300"
+                    className={cn(
+                      "transition-colors duration-300",
+                      gameState === 'showing' && targetCountries.includes(String(geo.id)) && "pulse-active"
+                    )}
                   />
                 ))
               }
